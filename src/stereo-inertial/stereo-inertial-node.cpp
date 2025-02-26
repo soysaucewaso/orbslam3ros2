@@ -1,6 +1,7 @@
 #include "stereo-inertial-node.hpp"
 
 #include <opencv2/core/core.hpp>
+#include <ros_utils.hpp>
 
 using std::placeholders::_1;
 
@@ -56,10 +57,31 @@ StereoInertialNode::StereoInertialNode(ORB_SLAM3::System *SLAM, const string &st
         cv::initUndistortRectifyMap(K_l, D_l, R_l, P_l.rowRange(0, 3).colRange(0, 3), cv::Size(cols_l, rows_l), CV_32F, M1l_, M2l_);
         cv::initUndistortRectifyMap(K_r, D_r, R_r, P_r.rowRange(0, 3).colRange(0, 3), cv::Size(cols_r, rows_r), CV_32F, M1r_, M2r_);
     }
+    rclcpp::QoS imu_qos(10);
+    imu_qos.best_effort();
+    imu_qos.durability_volatile();
 
-    subImu_ = this->create_subscription<ImuMsg>("imu", 1000, std::bind(&StereoInertialNode::GrabImu, this, _1));
-    subImgLeft_ = this->create_subscription<ImageMsg>("camera/left", 100, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
-    subImgRight_ = this->create_subscription<ImageMsg>("camera/right", 100, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
+    subImu_ = this->create_subscription<ImuMsg>("imu", imu_qos, std::bind(&StereoInertialNode::GrabImu, this, _1));
+    subImgLeft_ = this->create_subscription<ImageMsg>("/infra1/image_raw", 100, std::bind(&StereoInertialNode::GrabImageLeft, this, _1));
+    subImgRight_ = this->create_subscription<ImageMsg>("/infra2/image_raw", 100, std::bind(&StereoInertialNode::GrabImageRight, this, _1));
+
+    pubPose_ = this->create_publisher<PoseMsg>("body_pose", 1);
+    pubOdom_ = this->create_publisher<OdomMsg>("imu_odometry", 1);
+    pubTrackImage_ = this->create_publisher<ImageMsg>("tracking_image", 1);
+    pubPcd_ = this->create_publisher<PcdMsg>("point_cloud", 1);
+
+    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
+    tf_static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // declare rosparameters
+    this->declare_parameter("world_frame", "map");
+    this->declare_parameter("odom_frame", "odom");
+    this->declare_parameter("body_frame", "odom");
+    this->declare_parameter("body_optical_frame", "odom");
+    this->declare_parameter("camera_optical_frame", "odom");
+
 
     syncThread_ = new std::thread(&StereoInertialNode::SyncWithImu, this);
 }
@@ -113,7 +135,8 @@ cv::Mat StereoInertialNode::GetImage(const ImageMsg::SharedPtr msg)
 
     try
     {
-        cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+        /*cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);*/
+        cv_ptr = cv_bridge::toCvShare(msg);
     }
     catch (cv_bridge::Exception &e)
     {
@@ -137,10 +160,12 @@ void StereoInertialNode::SyncWithImu()
 
     while (1)
     {
+        RCLCPP_INFO_ONCE(this->get_logger(), "SLAM running...");
         cv::Mat imLeft, imRight;
         double tImLeft = 0, tImRight = 0;
         if (!imgLeftBuf_.empty() && !imgRightBuf_.empty() && !imuBuf_.empty())
         {
+            RCLCPP_INFO_ONCE(this->get_logger(), "Grab Image");
             tImLeft = Utility::StampToSec(imgLeftBuf_.front()->header.stamp);
             tImRight = Utility::StampToSec(imgRightBuf_.front()->header.stamp);
 
@@ -162,7 +187,7 @@ void StereoInertialNode::SyncWithImu()
 
             if ((tImLeft - tImRight) > maxTimeDiff || (tImRight - tImLeft) > maxTimeDiff)
             {
-                std::cout << "big time difference" << std::endl;
+                RCLCPP_INFO_ONCE(this->get_logger(), "big time difference");
                 continue;
             }
             if (tImLeft > Utility::StampToSec(imuBuf_.back()->header.stamp))
@@ -179,9 +204,11 @@ void StereoInertialNode::SyncWithImu()
             bufMutexRight_.unlock();
 
             vector<ORB_SLAM3::IMU::Point> vImuMeas;
+            Eigen::Vector3f Wbb; // body angular velocity in body frame
             bufMutex_.lock();
             if (!imuBuf_.empty())
             {
+                RCLCPP_INFO_ONCE(this->get_logger(), "Grab Imu");
                 // Load imu measurements from buffer
                 vImuMeas.clear();
                 while (!imuBuf_.empty() && Utility::StampToSec(imuBuf_.front()->header.stamp) <= tImLeft)
@@ -190,6 +217,7 @@ void StereoInertialNode::SyncWithImu()
                     cv::Point3f acc(imuBuf_.front()->linear_acceleration.x, imuBuf_.front()->linear_acceleration.y, imuBuf_.front()->linear_acceleration.z);
                     cv::Point3f gyr(imuBuf_.front()->angular_velocity.x, imuBuf_.front()->angular_velocity.y, imuBuf_.front()->angular_velocity.z);
                     vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc, gyr, t));
+                    Wbb = Eigen::Vector3f(imuBuf_.front()->angular_velocity.x, imuBuf_.front()->angular_velocity.y, imuBuf_.front()->angular_velocity.z);
                     imuBuf_.pop();
                 }
             }
@@ -206,11 +234,52 @@ void StereoInertialNode::SyncWithImu()
                 cv::remap(imLeft, imLeft, M1l_, M2l_, cv::INTER_LINEAR);
                 cv::remap(imRight, imRight, M1r_, M2r_, cv::INTER_LINEAR);
             }
+                  // Transform of camera in  world frame
+            Sophus::SE3f Tcw = SLAM_->TrackStereo(imLeft, imRight, tImLeft, vImuMeas);
+            Sophus::SE3f Twc = Tcw.inverse(); // Twc is imu optical frame pose in ROS FLU map coordinate
 
-            SLAM_->TrackStereo(imLeft, imRight, tImLeft, vImuMeas);
+            // publish topics
+            std::string world_frame = this->get_parameter("world_frame").as_string();
+            std::string odom_frame = this->get_parameter("odom_frame").as_string();
+            std::string body_frame = this->get_parameter("body_frame").as_string();
+            std::string body_optical_frame = this->get_parameter("body_optical_frame").as_string();
+            std::string camera_optical_frame = this->get_parameter("camera_optical_frame").as_string();
 
-            std::chrono::milliseconds tSleep(1);
-            std::this_thread::sleep_for(tSleep);
+            // define coordinate transforms ///
+            // OpenCV to ROS FLU coordinate transforms
+            Eigen::Matrix<float, 3, 3> cv_to_ros_rot; 
+            Eigen::Matrix<float, 3, 1> cv_to_ros_trans; 
+            cv_to_ros_rot << 0, 0, 1,
+                            -1, 0, 0,
+                            0, -1, 0;
+            cv_to_ros_trans << 0, 0, 0;
+            Sophus::SE3f cv_to_ros(cv_to_ros_rot, cv_to_ros_trans);
+            std::cout << cv_to_ros.matrix() << std::endl; 
+
+            // coordiante transform
+            Twc = Twc * cv_to_ros.inverse(); // imu frame pose in ROS FLU map coorinate
+
+            // Option1: publish map to odom tf from SLAM and odom to camera from VIO 
+            //// TF processing ////
+            try {
+                geometry_msgs::msg::TransformStamped camera_to_odom = tf_buffer_->lookupTransform(body_frame, odom_frame, tf2::TimePointZero);
+                Sophus::SE3f Tco= transform_to_SE3(camera_to_odom);
+                Sophus::SE3f Two = Twc * Tco.inverse();
+                publish_world_to_odom_tf(tf_broadcaster_, this->get_clock()->now(), Two, world_frame, odom_frame);
+            } catch (const tf2::TransformException & ex) {
+                RCLCPP_INFO(
+                this->get_logger(), "Could not get transform %s to %s: %s",
+                body_frame.c_str(), odom_frame.c_str(), ex.what());
+                return;
+            }
+
+                        // Option2: publish map to camera tf from SLAM
+            // publish_camera_tf(tf_broadcaster_, this->get_clock()->now(), Twc, world_frame, body_frame);
+            publish_camera_pose(pubPose_, this->get_clock()->now(), Twc, world_frame);
+            publish_tracking_img(pubTrackImage_, this->get_clock()->now(), SLAM_->GetCurrentFrame(), world_frame);
+
+            /*std::chrono::milliseconds tSleep(1);*/
+            /*std::this_thread::sleep_for(tSleep);*/
         }
     }
 }
