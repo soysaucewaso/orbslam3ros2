@@ -90,4 +90,7 @@ Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -3.5
 Viewer.ViewpointF: 500
 
-System.SaveAtlasToFile: "./slam_map"
+System.SaveAtlasToFile: "./stereo_only_map"
+#System.LoadAtlasFromFile: "./stereo_only_map"
+#System.SaveAtlasToFile: "./gmcs408map"
+#System.LoadAtlasFromFile: "./gmcs408map"

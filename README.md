@@ -1,5 +1,11 @@
 # ORB_SLAM3_ROS2
-This repository is ROS2 wrapping to use ORB_SLAM3
+This repository is a combination of zang09/ORB_SLAM3_ROS2 and jskkmhr/orbslam3
+It provides an easy command to run orbslam3, subscribing to and publishing to ros2 topics.
+
+Only supports stereo and stereo-inertial. To add support for mono or rgbd, copy relevant files from jskkmhr/orbslam3, and edit CMakeLists.
+
+The rest of README is relevant install instructions alsou found at zang09/ORB_SLAM3_ROS2/README.md
+
 
 ---
 

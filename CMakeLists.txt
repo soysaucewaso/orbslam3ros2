@@ -33,12 +33,14 @@ find_package(Pangolin REQUIRED)
 find_package(epoxy REQUIRED)
 find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
 find_package(ORB_SLAM3 REQUIRED)
+find_package(OpenCV 4.2 REQUIRED)
 
-add_executable(mono
-  src/monocular/mono.cpp
-  src/monocular/monocular-slam-node.cpp
-)
-ament_target_dependencies(mono rclcpp sensor_msgs cv_bridge ORB_SLAM3 Pangolin)
+#add_executable(mono
+#  src/monocular/mono.cpp
+#  src/monocular/monocular-slam-node.cpp
+#)
+#ament_target_dependencies(mono rclcpp sensor_msgs cv_bridge ORB_SLAM3 Pangolin)
+#[[
 target_include_directories(
   mono 
   PUBLIC 
@@ -50,11 +52,15 @@ add_executable(rgbd
   src/rgbd/rgbd-slam-node.cpp
 )
 ament_target_dependencies(rgbd rclcpp sensor_msgs cv_bridge message_filters ORB_SLAM3 Pangolin)
+#]]
+#[[
 target_include_directories(
   rgbd
   PUBLIC 
   ${PROJECT_SOURCE_DIR}/include ${ORB_SLAM3_INCLUDE_DIRS}/include ${ORB_SLAM3_INCLUDE_DIRS}/include/CameraModels
 )
+#]]
+
 
 add_executable(stereo
   src/stereo/stereo.cpp
@@ -80,7 +86,7 @@ target_include_directories(
   ${PROJECT_SOURCE_DIR}/include ${ORB_SLAM3_INCLUDE_DIRS}/include ${ORB_SLAM3_INCLUDE_DIRS}/include/CameraModels
 )
 
-install(TARGETS mono rgbd stereo stereo-inertial
+install(TARGETS stereo stereo-inertial
   DESTINATION lib/${PROJECT_NAME})
 
 # Install config files

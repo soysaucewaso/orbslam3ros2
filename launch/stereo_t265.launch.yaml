@@ -1,0 +1,28 @@
+launch:
+  - arg:
+      name: "vocab"
+      default: $(find-pkg-share orbslam3)/vocabulary/ORBvoc.txt
+  - arg:
+      name: "config"
+      default: $(find-pkg-share orbslam3)/config/stereo/RealSense_T265.yaml
+  - arg:
+      name: "rectify"
+      default: "false"
+  - arg:
+      name: "camera_name"
+      default: "t265"
+  - node:
+      pkg: "orbslam3"
+      exec: "stereo"
+      name: "orbslam3"
+      args: $(var vocab) $(var config) $(var rectify)
+      param:
+        - 
+          from: "$(find-pkg-share orbslam3)/config/stereo-slam.yaml"
+      remap:
+        - 
+          from: "/camera/left"
+          to: "/$(var camera_name)/fisheye1/image_raw"
+        -
+          from: "/camera/right"
+          to: "/$(var camera_name)/fisheye2/image_raw"
